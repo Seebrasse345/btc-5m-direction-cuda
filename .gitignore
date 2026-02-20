@@ -20,6 +20,12 @@ reports/*.png
 reports/*.html
 reports/*.json
 reports/*.csv
+!reports/summary.json
+!reports/weighted_multi_horizon_metrics.json
+!reports/holdout_metrics.csv
+!reports/lstm_holdout_metrics.csv
+!reports/blend_holdout_metrics.csv
+!reports/blend_summary.json
 
 # Keep directory structure
 !data/.gitkeep
