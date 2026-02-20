@@ -14,7 +14,7 @@ __pycache__/
 data/raw/
 data/processed/
 models/
-artifacts/
+artifacts/*
 reports/*.parquet
 reports/*.png
 reports/*.html
@@ -26,6 +26,12 @@ reports/*.csv
 !reports/lstm_holdout_metrics.csv
 !reports/blend_holdout_metrics.csv
 !reports/blend_summary.json
+!reports/signal_policy_metrics.csv
+!reports/signal_policy_thresholds.csv
+!reports/weighted_signal_policy_metrics.json
+!reports/online_update_metrics.csv
+!reports/best_signal_policy.json
+!artifacts/online_state.json
 
 # Keep directory structure
 !data/.gitkeep

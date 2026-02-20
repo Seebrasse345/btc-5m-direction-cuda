@@ -37,6 +37,27 @@ def xgb_default_params(seed: int = 42) -> dict[str, Any]:
     }
 
 
+def sample_xgb_params(seed: int, trial: int) -> dict[str, Any]:
+    rng = np.random.default_rng(seed + trial * 17)
+    return {
+        "objective": "binary:logistic",
+        "eval_metric": ["logloss", "auc"],
+        "tree_method": "hist",
+        "device": "cuda",
+        "eta": float(np.exp(rng.uniform(np.log(0.008), np.log(0.08)))),
+        "max_depth": int(rng.integers(4, 13)),
+        "subsample": float(rng.uniform(0.60, 1.00)),
+        "colsample_bytree": float(rng.uniform(0.60, 1.00)),
+        "min_child_weight": float(np.exp(rng.uniform(np.log(1.0), np.log(24.0)))),
+        "lambda": float(np.exp(rng.uniform(np.log(1e-3), np.log(15.0)))),
+        "alpha": float(np.exp(rng.uniform(np.log(1e-4), np.log(8.0)))),
+        "gamma": float(rng.uniform(0.0, 6.0)),
+        "max_bin": int(rng.choice([256, 384, 512])),
+        "grow_policy": str(rng.choice(["depthwise", "lossguide"])),
+        "seed": seed + trial,
+    }
+
+
 def compute_metrics(y_true: np.ndarray, proba: np.ndarray, threshold: float = 0.5) -> dict[str, float]:
     pred = (proba >= threshold).astype(np.int8)
 
@@ -60,6 +81,108 @@ def compute_metrics(y_true: np.ndarray, proba: np.ndarray, threshold: float = 0.
 class FoldResult:
     fold_metrics: pd.DataFrame
     oof_pred: np.ndarray
+
+
+@dataclass(slots=True)
+class TuneResult:
+    best_params: dict[str, Any]
+    best_score: float
+    trials_df: pd.DataFrame
+
+
+def _train_eval_auc(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    params: dict[str, Any],
+    num_boost_round: int,
+    early_stopping_rounds: int,
+) -> tuple[float, int]:
+    max_bin = int(params.get("max_bin", 256))
+    dtrain = xgb.QuantileDMatrix(X_train, y_train, max_bin=max_bin)
+    dval = xgb.QuantileDMatrix(X_val, y_val, ref=dtrain, max_bin=max_bin)
+    booster = xgb.train(
+        params=params,
+        dtrain=dtrain,
+        num_boost_round=num_boost_round,
+        evals=[(dtrain, "train"), (dval, "valid")],
+        early_stopping_rounds=early_stopping_rounds,
+        verbose_eval=False,
+    )
+    pred = booster.predict(xgb.DMatrix(X_val)).astype(np.float32)
+    auc = compute_metrics(y_val, pred)["auc"]
+    return float(auc), int(booster.best_iteration)
+
+
+def tune_xgb_params(
+    X: np.ndarray,
+    y: np.ndarray,
+    tune_splits,
+    base_params: dict[str, Any],
+    num_boost_round: int,
+    early_stopping_rounds: int,
+    n_trials: int,
+    seed: int,
+) -> TuneResult:
+    if n_trials <= 0:
+        return TuneResult(best_params=base_params, best_score=float("nan"), trials_df=pd.DataFrame())
+
+    rows: list[dict[str, float | int | str]] = []
+    best_score = float("-inf")
+    best_params = dict(base_params)
+
+    for trial in range(1, n_trials + 1):
+        params = sample_xgb_params(seed=seed, trial=trial)
+        aucs = []
+        iters = []
+        for split_id, (train_idx, val_idx) in enumerate(tune_splits, start=1):
+            auc, best_iteration = _train_eval_auc(
+                X_train=X[train_idx],
+                y_train=y[train_idx],
+                X_val=X[val_idx],
+                y_val=y[val_idx],
+                params=params,
+                num_boost_round=max(300, num_boost_round // 2),
+                early_stopping_rounds=max(40, early_stopping_rounds // 2),
+            )
+            aucs.append(auc)
+            iters.append(best_iteration)
+
+        score = float(np.nanmean(aucs))
+        row = {
+            "trial": trial,
+            "score_auc": score,
+            "eta": params["eta"],
+            "max_depth": params["max_depth"],
+            "subsample": params["subsample"],
+            "colsample_bytree": params["colsample_bytree"],
+            "min_child_weight": params["min_child_weight"],
+            "lambda": params["lambda"],
+            "alpha": params["alpha"],
+            "gamma": params["gamma"],
+            "max_bin": params["max_bin"],
+            "grow_policy": params["grow_policy"],
+            "avg_best_iteration": float(np.mean(iters)) if iters else float("nan"),
+        }
+        rows.append(row)
+
+        if score > best_score:
+            best_score = score
+            best_params = dict(params)
+
+    # Keep objective/eval config stable.
+    best_params["objective"] = base_params.get("objective", "binary:logistic")
+    best_params["eval_metric"] = base_params.get("eval_metric", ["logloss", "auc"])
+    best_params["tree_method"] = base_params.get("tree_method", "hist")
+    best_params["device"] = base_params.get("device", "cuda")
+    best_params["seed"] = seed
+
+    return TuneResult(
+        best_params=best_params,
+        best_score=best_score,
+        trials_df=pd.DataFrame(rows).sort_values("score_auc", ascending=False).reset_index(drop=True),
+    )
 
 
 def cross_validate_xgb(

@@ -50,7 +50,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add reports/summary.json reports/weighted_multi_horizon_metrics.json reports/holdout_metrics.csv reports/lstm_holdout_metrics.csv reports/blend_holdout_metrics.csv reports/blend_summary.json
+          git add reports/summary.json reports/weighted_multi_horizon_metrics.json reports/weighted_signal_policy_metrics.json reports/best_signal_policy.json reports/holdout_metrics.csv reports/signal_policy_metrics.csv reports/signal_policy_thresholds.csv reports/lstm_holdout_metrics.csv reports/blend_holdout_metrics.csv reports/blend_summary.json
           if ! git diff --cached --quiet; then
             git commit -m "chore: automated retrain $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             git push
