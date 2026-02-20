@@ -1,0 +1,28 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Large artifacts
+data/raw/
+data/processed/
+models/
+artifacts/
+reports/*.parquet
+reports/*.png
+reports/*.html
+reports/*.json
+reports/*.csv
+
+# Keep directory structure
+!data/.gitkeep
+!models/.gitkeep
+!reports/.gitkeep
+!artifacts/.gitkeep
