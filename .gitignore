@@ -31,6 +31,10 @@ reports/*.csv
 !reports/weighted_signal_policy_metrics.json
 !reports/online_update_metrics.csv
 !reports/best_signal_policy.json
+!reports/high_precision_policies.csv
+!reports/high_precision_best.json
+!reports/high_precision_quantile_policies.csv
+!reports/high_precision_quantile_best.json
 !artifacts/online_state.json
 
 # Keep directory structure

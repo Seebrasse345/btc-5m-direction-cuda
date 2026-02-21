@@ -27,7 +27,11 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     return tr.rolling(period).mean()
 
 
-def make_feature_frame(raw_df: pd.DataFrame, horizons: list[int]) -> tuple[pd.DataFrame, list[str], list[str]]:
+def make_feature_frame(
+    raw_df: pd.DataFrame,
+    horizons: list[int],
+    perp_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
     df = raw_df.copy()
     df = df.sort_values("open_time").drop_duplicates("open_time").reset_index(drop=True)
 
@@ -94,6 +98,47 @@ def make_feature_frame(raw_df: pd.DataFrame, horizons: list[int]) -> tuple[pd.Da
     out["f_minute_cos"] = np.cos(2 * np.pi * minute_of_day / 1440.0)
     out["f_dayofweek_sin"] = np.sin(2 * np.pi * ts.dt.dayofweek / 7.0)
     out["f_dayofweek_cos"] = np.cos(2 * np.pi * ts.dt.dayofweek / 7.0)
+
+    if perp_df is not None and not perp_df.empty:
+        perp = perp_df.copy()
+        for col in ["open_time", "open", "high", "low", "close", "volume"]:
+            if col in perp.columns:
+                perp[col] = pd.to_numeric(perp[col], errors="coerce")
+        perp = perp[["open_time", "open", "high", "low", "close", "volume"]]
+        perp = perp.sort_values("open_time").drop_duplicates("open_time")
+        perp = perp.rename(
+            columns={
+                "open": "perp_open",
+                "high": "perp_high",
+                "low": "perp_low",
+                "close": "perp_close",
+                "volume": "perp_volume",
+            }
+        )
+        merged = pd.DataFrame({"open_time": df["open_time"]}).merge(perp, on="open_time", how="left")
+
+        perp_available = merged["perp_close"].notna().astype("float32")
+        perp_open = merged["perp_open"].fillna(df["open"])
+        perp_high = merged["perp_high"].fillna(df["high"])
+        perp_low = merged["perp_low"].fillna(df["low"])
+        perp_close = merged["perp_close"].fillna(df["close"])
+        perp_volume = merged["perp_volume"].fillna(0.0)
+
+        out["f_perp_available"] = perp_available
+        out["f_perp_ret_1"] = perp_close.pct_change().fillna(0.0)
+        out["f_basis_open"] = (perp_open - df["open"]) / (df["open"] + 1e-12)
+        out["f_basis_close"] = (perp_close - df["close"]) / (df["close"] + 1e-12)
+        out["f_basis_change"] = out["f_basis_close"] - out["f_basis_open"]
+        out["f_perp_spot_vol_ratio"] = perp_volume / (df["volume"] + 1e-12)
+        out["f_perp_body"] = (perp_close - perp_open) / (perp_open + 1e-12)
+
+        for window in [3, 6, 12, 24, 48, 96, 288]:
+            out[f"f_basis_mean_{window}"] = out["f_basis_close"].rolling(window).mean()
+            out[f"f_basis_std_{window}"] = out["f_basis_close"].rolling(window).std()
+            out[f"f_basis_z_{window}"] = (
+                (out["f_basis_close"] - out["f_basis_close"].rolling(window).mean())
+                / (out["f_basis_close"].rolling(window).std() + 1e-12)
+            )
 
     target_cols: list[str] = []
     for h in horizons:

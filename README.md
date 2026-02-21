@@ -5,6 +5,7 @@ This project downloads full available `BTCUSDT` 5-minute candles, engineers leak
 ## What it does
 
 - Downloads and updates full Binance Spot `BTCUSDT` `5m` kline history.
+- Downloads and updates Binance Futures perpetual `BTCUSDT` `5m` klines and builds basis features.
 - Builds lagged/rolling technical and market microstructure features.
 - Trains one GPU XGBoost classifier per horizon (default: `1,3,6,12` candles = `5m,15m,30m,60m`).
 - Runs per-horizon GPU hyperparameter search before final training.
@@ -75,10 +76,13 @@ python scripts/online_update_xgb.py
 
 For 5m BTC direction, raw class probabilities are close to random.  
 The project therefore also produces a confidence-filtered signal policy (two-threshold abstention) to improve realized win rate on acted trades, with explicit coverage reporting.
+It also exports high-precision policies (60/65/70% target win-rate on OOF) with realized holdout coverage.
+Additionally, fixed ultra-precision quantile policies (`q=0.99/0.995`) are exported for maximum win-rate mode.
 
 ## Outputs
 
 - Raw data: `data/raw/btcusdt_5m.parquet`
+- Futures data: `data/raw/btcusdt_perp_5m.parquet`
 - Feature matrix: `data/processed/btcusdt_5m_features.parquet`
 - Models: `models/xgb_h*.json`
 - Reports:
@@ -88,6 +92,10 @@ The project therefore also produces a confidence-filtered signal policy (two-thr
   - `reports/weighted_multi_horizon_metrics.json`
   - `reports/weighted_signal_policy_metrics.json`
   - `reports/best_signal_policy.json`
+  - `reports/high_precision_policies.csv`
+  - `reports/high_precision_best.json`
+  - `reports/high_precision_quantile_policies.csv`
+  - `reports/high_precision_quantile_best.json`
   - `reports/online_update_metrics.csv`
   - `reports/signal_policy_metrics.csv`
   - `reports/signal_policy_thresholds.csv`
@@ -122,6 +130,7 @@ gh repo create btc-direction-cuda --public --source . --remote origin --push
 ## Primary references
 
 - Binance Spot API klines (interval, limits): https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md
+- Binance Futures API klines: https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
 - Binance public historical data (monthly/daily files): https://github.com/binance/binance-public-data
 - XGBoost GPU support (`device=cuda`, `hist`, QuantileDMatrix): https://xgboost.readthedocs.io/en/stable/gpu/
 - XGBoost continuation training (`xgb_model`): https://xgboost.readthedocs.io/en/stable/python/examples/continuation.html

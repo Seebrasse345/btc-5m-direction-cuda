@@ -1,0 +1,9 @@
+{
+  "model": "weighted",
+  "target_win_rate": 0.65,
+  "lower": 0.41191207617521286,
+  "upper": 0.5880879238247871,
+  "holdout_win_rate": 0.5966850828729282,
+  "holdout_coverage": 0.0030520020683918255,
+  "holdout_num_trades": 543.0
+}

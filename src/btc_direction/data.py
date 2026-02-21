@@ -11,6 +11,7 @@ import requests
 from tqdm import tqdm
 
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 KLINE_COLUMNS = [
     "open_time",
     "open",
@@ -87,6 +88,7 @@ def iter_binance_klines(
     limit: int = 1000,
     sleep_seconds: float = 0.06,
     max_retries: int = 8,
+    endpoint_url: str = BINANCE_KLINES_URL,
 ):
     if interval not in INTERVAL_TO_MS:
         raise ValueError(f"Unsupported interval: {interval}")
@@ -111,7 +113,7 @@ def iter_binance_klines(
             payload = None
             for attempt in range(max_retries):
                 try:
-                    response = session.get(BINANCE_KLINES_URL, params=params, timeout=45)
+                    response = session.get(endpoint_url, params=params, timeout=45)
                     if response.status_code in (418, 429):
                         retry_after = int(response.headers.get("Retry-After", "2"))
                         time.sleep(max(2, retry_after))
@@ -159,6 +161,7 @@ def download_binance_klines(
     limit: int = 1000,
     sleep_seconds: float = 0.06,
     max_retries: int = 8,
+    endpoint_url: str = BINANCE_KLINES_URL,
 ) -> pd.DataFrame:
     chunks = list(
         iter_binance_klines(
@@ -169,6 +172,7 @@ def download_binance_klines(
             limit=limit,
             sleep_seconds=sleep_seconds,
             max_retries=max_retries,
+            endpoint_url=endpoint_url,
         )
     )
     if not chunks:
@@ -219,6 +223,7 @@ def load_or_update_btc_data(
         interval=interval,
         start_ms=start_ms,
         end_ms=end_ms,
+        endpoint_url=BINANCE_KLINES_URL,
     ):
         buffer.append(chunk)
         request_count += 1
@@ -230,6 +235,54 @@ def load_or_update_btc_data(
     existing = _merge_frames(existing, buffer)
     if existing.empty:
         raise RuntimeError("No kline data was downloaded.")
+
+    existing.to_parquet(output_path, index=False)
+    return existing
+
+
+def load_or_update_futures_data(
+    output_path: Path,
+    symbol: str = "BTCUSDT",
+    interval: str = "5m",
+    start_date: str = "2019-09-08",
+    force_full: bool = False,
+    checkpoint_every_requests: int = 100,
+) -> pd.DataFrame:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_path.exists() and not force_full:
+        existing = pd.read_parquet(output_path)
+        existing = existing.sort_values("open_time").drop_duplicates("open_time")
+        start_ms = int(existing["open_time"].max()) + INTERVAL_TO_MS[interval]
+    else:
+        existing = pd.DataFrame(columns=KLINE_COLUMNS[:-1])
+        start_ms = _to_ms_timestamp(start_date)
+
+    end_ms = _utc_now_ms()
+    if start_ms >= end_ms:
+        return existing.reset_index(drop=True)
+
+    request_count = 0
+    buffer: list[pd.DataFrame] = []
+
+    for chunk in iter_binance_klines(
+        symbol=symbol,
+        interval=interval,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        endpoint_url=BINANCE_FUTURES_KLINES_URL,
+    ):
+        buffer.append(chunk)
+        request_count += 1
+        if request_count % checkpoint_every_requests == 0:
+            existing = _merge_frames(existing, buffer)
+            existing.to_parquet(output_path, index=False)
+            buffer.clear()
+
+    existing = _merge_frames(existing, buffer)
+    if existing.empty:
+        raise RuntimeError("No futures kline data was downloaded.")
 
     existing.to_parquet(output_path, index=False)
     return existing

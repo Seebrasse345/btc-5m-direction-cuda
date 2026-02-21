@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train CUDA LSTM multi-horizon BTC direction model.")
     parser.add_argument("--features", default=str(cfg.features_path), type=str)
     parser.add_argument("--data", default=str(cfg.raw_data_path), type=str)
+    parser.add_argument("--perp-data", default=str(cfg.perp_raw_data_path), type=str)
     parser.add_argument("--models-dir", default=str(cfg.models_dir), type=str)
     parser.add_argument("--reports-dir", default=str(cfg.reports_dir), type=str)
     parser.add_argument("--horizons", default="1,3,6,12", type=str)
@@ -167,13 +168,19 @@ def weighted_auc(probs: np.ndarray, targets: np.ndarray, weights: np.ndarray) ->
     return float((aucs_arr * weights).sum())
 
 
-def _build_features_if_missing(features_path: Path, raw_data_path: Path, horizons: list[int]) -> None:
+def _build_features_if_missing(
+    features_path: Path,
+    raw_data_path: Path,
+    perp_data_path: Path | None,
+    horizons: list[int],
+) -> None:
     if features_path.exists():
         return
     if not raw_data_path.exists():
         raise FileNotFoundError("Neither features nor raw data file exists.")
     raw_df = pd.read_parquet(raw_data_path)
-    features_df, _, _ = make_feature_frame(raw_df, horizons=horizons)
+    perp_df = pd.read_parquet(perp_data_path) if (perp_data_path is not None and perp_data_path.exists()) else None
+    features_df, _, _ = make_feature_frame(raw_df, horizons=horizons, perp_df=perp_df)
     features_path.parent.mkdir(parents=True, exist_ok=True)
     features_df.to_parquet(features_path, index=False)
 
@@ -195,10 +202,11 @@ def main() -> None:
 
     features_path = Path(args.features)
     raw_data_path = Path(args.data)
+    perp_data_path = Path(args.perp_data)
     models_dir = Path(args.models_dir)
     reports_dir = Path(args.reports_dir)
 
-    _build_features_if_missing(features_path, raw_data_path, horizons)
+    _build_features_if_missing(features_path, raw_data_path, perp_data_path, horizons)
     df = pd.read_parquet(features_path)
 
     feature_cols = [c for c in df.columns if c.startswith("f_")]

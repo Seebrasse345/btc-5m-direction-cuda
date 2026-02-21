@@ -12,6 +12,16 @@ class SignalThresholds:
     objective_score: float
 
 
+@dataclass(slots=True)
+class HighPrecisionPolicy:
+    lower: float
+    upper: float
+    target_win_rate: float
+    realized_win_rate: float
+    realized_coverage: float
+    objective_score: float
+
+
 def make_directional_signals(proba: np.ndarray, lower: float, upper: float) -> np.ndarray:
     if not (0.0 <= lower < upper <= 1.0):
         raise ValueError("Expected thresholds 0 <= lower < upper <= 1.")
@@ -67,7 +77,10 @@ def optimize_signal_thresholds(
     lower_grid = np.linspace(0.05, 0.495, 90) if lower_grid is None else lower_grid
     upper_grid = np.linspace(0.505, 0.95, 90) if upper_grid is None else upper_grid
 
-    best = SignalThresholds(lower=0.45, upper=0.55, objective_score=float("-inf"))
+    best_valid: SignalThresholds | None = None
+    best_fallback: SignalThresholds | None = None
+    best_valid_score = float("-inf")
+    best_fallback_score = float("-inf")
 
     for lower in lower_grid:
         for upper in upper_grid:
@@ -80,10 +93,104 @@ def optimize_signal_thresholds(
             if np.isnan(win_rate):
                 continue
 
-            coverage_shortfall = max(0.0, min_coverage - coverage)
-            # Penalize low participation so the policy doesn't collapse to near-zero trade counts.
-            score = float(win_rate - 2.0 * coverage_shortfall + 0.05 * coverage)
-            if score > best.objective_score:
-                best = SignalThresholds(lower=float(lower), upper=float(upper), objective_score=score)
+            if coverage >= min_coverage:
+                score = float(win_rate + 0.05 * coverage)
+                if score > best_valid_score:
+                    best_valid_score = score
+                    best_valid = SignalThresholds(lower=float(lower), upper=float(upper), objective_score=score)
 
-    return best
+            fallback_score = float(-abs(coverage - min_coverage) + 0.02 * win_rate)
+            if fallback_score > best_fallback_score:
+                best_fallback_score = fallback_score
+                best_fallback = SignalThresholds(
+                    lower=float(lower),
+                    upper=float(upper),
+                    objective_score=fallback_score,
+                )
+
+    if best_valid is not None:
+        return best_valid
+    if best_fallback is not None:
+        return best_fallback
+    return SignalThresholds(lower=0.45, upper=0.55, objective_score=float("-inf"))
+
+
+def optimize_high_precision_policy(
+    y_true: np.ndarray,
+    proba: np.ndarray,
+    target_win_rate: float,
+    min_coverage: float = 0.001,
+    center: float = 0.5,
+    quantiles: np.ndarray | None = None,
+) -> HighPrecisionPolicy:
+    if target_win_rate <= 0.0 or target_win_rate >= 1.0:
+        raise ValueError("target_win_rate must be in (0, 1).")
+
+    mask = ~np.isnan(proba)
+    y = y_true[mask]
+    p = proba[mask]
+    if len(y) == 0:
+        return HighPrecisionPolicy(
+            lower=0.45,
+            upper=0.55,
+            target_win_rate=target_win_rate,
+            realized_win_rate=float("nan"),
+            realized_coverage=0.0,
+            objective_score=float("-inf"),
+        )
+
+    edge = np.abs(p - center)
+    quantiles = np.linspace(0.80, 0.999, 120) if quantiles is None else quantiles
+
+    best_meeting: HighPrecisionPolicy | None = None
+    best_meeting_coverage = float("-inf")
+    best_fallback: HighPrecisionPolicy | None = None
+    best_fallback_score = float("-inf")
+
+    for q in quantiles:
+        margin = float(np.quantile(edge, q))
+        lower = float(center - margin)
+        upper = float(center + margin)
+        signal = make_directional_signals(p, lower=lower, upper=upper)
+        m = signal_metrics(y, signal)
+        coverage = float(m["coverage"])
+        win_rate = float(m["win_rate"]) if not np.isnan(m["win_rate"]) else float("nan")
+        if np.isnan(win_rate) or coverage <= 0.0:
+            continue
+
+        if coverage >= min_coverage and win_rate >= target_win_rate:
+            if coverage > best_meeting_coverage:
+                best_meeting_coverage = coverage
+                best_meeting = HighPrecisionPolicy(
+                    lower=lower,
+                    upper=upper,
+                    target_win_rate=target_win_rate,
+                    realized_win_rate=win_rate,
+                    realized_coverage=coverage,
+                    objective_score=coverage,
+                )
+
+        fallback_score = float(win_rate - abs(target_win_rate - win_rate) + 0.01 * coverage)
+        if coverage >= min_coverage and fallback_score > best_fallback_score:
+            best_fallback_score = fallback_score
+            best_fallback = HighPrecisionPolicy(
+                lower=lower,
+                upper=upper,
+                target_win_rate=target_win_rate,
+                realized_win_rate=win_rate,
+                realized_coverage=coverage,
+                objective_score=fallback_score,
+            )
+
+    if best_meeting is not None:
+        return best_meeting
+    if best_fallback is not None:
+        return best_fallback
+    return HighPrecisionPolicy(
+        lower=0.45,
+        upper=0.55,
+        target_win_rate=target_win_rate,
+        realized_win_rate=float("nan"),
+        realized_coverage=0.0,
+        objective_score=float("-inf"),
+    )

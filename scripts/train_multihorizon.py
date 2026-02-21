@@ -24,7 +24,12 @@ from btc_direction.model import (
     train_final_xgb,
     xgb_default_params,
 )
-from btc_direction.signals import make_directional_signals, optimize_signal_thresholds, signal_metrics
+from btc_direction.signals import (
+    make_directional_signals,
+    optimize_high_precision_policy,
+    optimize_signal_thresholds,
+    signal_metrics,
+)
 from btc_direction.validation import build_time_series_cv
 
 
@@ -32,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     cfg = PipelineConfig()
     parser = argparse.ArgumentParser(description="Train leakage-safe multi-horizon BTC direction models.")
     parser.add_argument("--data", default=str(cfg.raw_data_path), type=str)
+    parser.add_argument("--perp-data", default=str(cfg.perp_raw_data_path), type=str)
     parser.add_argument("--features-out", default=str(cfg.features_path), type=str)
     parser.add_argument("--models-dir", default=str(cfg.models_dir), type=str)
     parser.add_argument("--reports-dir", default=str(cfg.reports_dir), type=str)
@@ -73,6 +79,7 @@ def main() -> None:
     np.random.seed(args.seed)
 
     data_path = Path(args.data)
+    perp_data_path = Path(args.perp_data)
     models_dir = Path(args.models_dir)
     reports_dir = Path(args.reports_dir)
     features_out = Path(args.features_out)
@@ -91,7 +98,8 @@ def main() -> None:
         raise FileNotFoundError(f"Data file not found: {data_path}")
 
     raw_df = pd.read_parquet(data_path)
-    features_df, feature_cols, target_cols = make_feature_frame(raw_df, horizons=horizons)
+    perp_df = pd.read_parquet(perp_data_path) if perp_data_path.exists() else None
+    features_df, feature_cols, target_cols = make_feature_frame(raw_df, horizons=horizons, perp_df=perp_df)
     features_out.parent.mkdir(parents=True, exist_ok=True)
     features_df.to_parquet(features_out, index=False)
 
@@ -123,6 +131,7 @@ def main() -> None:
     dummy_rows: list[dict[str, float | str]] = []
     signal_rows: list[dict[str, float | str]] = []
     signal_threshold_rows: list[dict[str, float | str]] = []
+    high_precision_rows: list[dict[str, float | str]] = []
     horizon_holdout_pred: dict[int, np.ndarray] = {}
     horizon_holdout_true: dict[int, np.ndarray] = {}
     horizon_oof_pred: dict[int, np.ndarray] = {}
@@ -286,6 +295,150 @@ def main() -> None:
     _save_json(reports_dir / "weighted_signal_policy_metrics.json", weighted_signal_payload)
     _save_json(reports_dir / "best_signal_policy.json", weighted_signal_payload)
 
+    high_precision_targets = [0.60, 0.65, 0.70]
+    for h in horizons:
+        oof_p = horizon_oof_pred[h]
+        oof_y = horizon_oof_true[h]
+        hold_p = horizon_holdout_pred[h]
+        hold_y = horizon_holdout_true[h]
+        valid = ~np.isnan(oof_p)
+        for target_wr in high_precision_targets:
+            policy = optimize_high_precision_policy(
+                y_true=oof_y[valid],
+                proba=oof_p[valid],
+                target_win_rate=target_wr,
+                min_coverage=0.001,
+            )
+            hold_signal = make_directional_signals(hold_p, policy.lower, policy.upper)
+            hold_metrics = signal_metrics(hold_y, hold_signal)
+            high_precision_rows.append(
+                {
+                    "model": f"h{h}",
+                    "target_win_rate": target_wr,
+                    "lower": policy.lower,
+                    "upper": policy.upper,
+                    "oof_win_rate": policy.realized_win_rate,
+                    "oof_coverage": policy.realized_coverage,
+                    "holdout_win_rate": hold_metrics["win_rate"],
+                    "holdout_coverage": hold_metrics["coverage"],
+                    "holdout_num_trades": hold_metrics["num_trades"],
+                }
+            )
+
+    for target_wr in high_precision_targets:
+        policy = optimize_high_precision_policy(
+            y_true=weighted_oof_target[oof_mask],
+            proba=weighted_oof_proba[oof_mask],
+            target_win_rate=target_wr,
+            min_coverage=0.001,
+        )
+        hold_signal = make_directional_signals(weighted_proba, policy.lower, policy.upper)
+        hold_metrics = signal_metrics(weighted_target, hold_signal)
+        high_precision_rows.append(
+            {
+                "model": "weighted",
+                "target_win_rate": target_wr,
+                "lower": policy.lower,
+                "upper": policy.upper,
+                "oof_win_rate": policy.realized_win_rate,
+                "oof_coverage": policy.realized_coverage,
+                "holdout_win_rate": hold_metrics["win_rate"],
+                "holdout_coverage": hold_metrics["coverage"],
+                "holdout_num_trades": hold_metrics["num_trades"],
+            }
+        )
+
+    high_precision_df = pd.DataFrame(high_precision_rows)
+    high_precision_df.to_csv(reports_dir / "high_precision_policies.csv", index=False)
+
+    high_precision_valid = high_precision_df.dropna(subset=["holdout_win_rate"]).copy()
+    eligible_hp = high_precision_valid[high_precision_valid["holdout_win_rate"] >= 0.60]
+    if not eligible_hp.empty:
+        best_hp = eligible_hp.sort_values(["holdout_coverage", "holdout_win_rate"], ascending=[False, False]).iloc[0]
+    else:
+        best_hp = high_precision_valid.sort_values("holdout_win_rate", ascending=False).iloc[0]
+    high_precision_payload = {
+        "model": str(best_hp["model"]),
+        "target_win_rate": float(best_hp["target_win_rate"]),
+        "lower": float(best_hp["lower"]),
+        "upper": float(best_hp["upper"]),
+        "holdout_win_rate": float(best_hp["holdout_win_rate"]),
+        "holdout_coverage": float(best_hp["holdout_coverage"]),
+        "holdout_num_trades": float(best_hp["holdout_num_trades"]),
+    }
+    _save_json(reports_dir / "high_precision_best.json", high_precision_payload)
+
+    quantile_rows: list[dict[str, float | str]] = []
+    quantile_grid = [0.99, 0.995]
+    model_streams: list[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    for h in horizons:
+        valid = ~np.isnan(horizon_oof_pred[h])
+        model_streams.append(
+            (
+                f"h{h}",
+                horizon_oof_pred[h][valid],
+                horizon_oof_true[h][valid],
+                horizon_holdout_pred[h],
+                horizon_holdout_true[h],
+            )
+        )
+    model_streams.append(
+        (
+            "weighted",
+            weighted_oof_proba[oof_mask],
+            weighted_oof_target[oof_mask],
+            weighted_proba,
+            weighted_target,
+        )
+    )
+
+    for model_name, oof_p, oof_y, hold_p, hold_y in model_streams:
+        edge = np.abs(oof_p - 0.5)
+        for q in quantile_grid:
+            margin = float(np.quantile(edge, q))
+            lower = 0.5 - margin
+            upper = 0.5 + margin
+            oof_signal = make_directional_signals(oof_p, lower=lower, upper=upper)
+            hold_signal = make_directional_signals(hold_p, lower=lower, upper=upper)
+            oof_m = signal_metrics(oof_y, oof_signal)
+            hold_m = signal_metrics(hold_y, hold_signal)
+            quantile_rows.append(
+                {
+                    "model": model_name,
+                    "quantile": q,
+                    "lower": lower,
+                    "upper": upper,
+                    "oof_win_rate": oof_m["win_rate"],
+                    "oof_coverage": oof_m["coverage"],
+                    "holdout_win_rate": hold_m["win_rate"],
+                    "holdout_coverage": hold_m["coverage"],
+                    "holdout_num_trades": hold_m["num_trades"],
+                }
+            )
+
+    quantile_df = pd.DataFrame(quantile_rows)
+    quantile_df.to_csv(reports_dir / "high_precision_quantile_policies.csv", index=False)
+    quantile_valid = quantile_df.dropna(subset=["holdout_win_rate"]).copy()
+    quantile_valid = quantile_valid[quantile_valid["holdout_num_trades"] >= 100.0]
+    if quantile_valid.empty:
+        best_quantile = quantile_df.dropna(subset=["holdout_win_rate"]).sort_values("holdout_win_rate", ascending=False).iloc[0]
+    else:
+        eligible_q = quantile_valid[quantile_valid["holdout_win_rate"] >= 0.60]
+        if not eligible_q.empty:
+            best_quantile = eligible_q.sort_values(["holdout_coverage", "holdout_win_rate"], ascending=[False, False]).iloc[0]
+        else:
+            best_quantile = quantile_valid.sort_values("holdout_win_rate", ascending=False).iloc[0]
+    quantile_payload = {
+        "model": str(best_quantile["model"]),
+        "quantile": float(best_quantile["quantile"]),
+        "lower": float(best_quantile["lower"]),
+        "upper": float(best_quantile["upper"]),
+        "holdout_win_rate": float(best_quantile["holdout_win_rate"]),
+        "holdout_coverage": float(best_quantile["holdout_coverage"]),
+        "holdout_num_trades": float(best_quantile["holdout_num_trades"]),
+    }
+    _save_json(reports_dir / "high_precision_quantile_best.json", quantile_payload)
+
     pred_cols = {"open_time": holdout_times}
     for h in horizons:
         pred_cols[f"proba_h{h}"] = horizon_holdout_pred[h]
@@ -304,6 +457,7 @@ def main() -> None:
 
     run_config = {
         "data_path": str(data_path),
+        "perp_data_path": str(perp_data_path),
         "features_out": str(features_out),
         "models_dir": str(models_dir),
         "reports_dir": str(reports_dir),
@@ -337,6 +491,12 @@ def main() -> None:
         "best_signal_mode": str(weighted_signal_payload["mode"]),
         "best_signal_holdout_win_rate": float(weighted_signal_payload["win_rate"]),
         "best_signal_holdout_coverage": float(weighted_signal_payload["coverage"]),
+        "high_precision_model": str(high_precision_payload["model"]),
+        "high_precision_holdout_win_rate": float(high_precision_payload["holdout_win_rate"]),
+        "high_precision_holdout_coverage": float(high_precision_payload["holdout_coverage"]),
+        "high_precision_quantile_model": str(quantile_payload["model"]),
+        "high_precision_quantile_holdout_win_rate": float(quantile_payload["holdout_win_rate"]),
+        "high_precision_quantile_holdout_coverage": float(quantile_payload["holdout_coverage"]),
     }
     _save_json(reports_dir / "summary.json", summary)
 

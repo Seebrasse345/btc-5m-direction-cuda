@@ -16,7 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from btc_direction.config import PipelineConfig
-from btc_direction.data import load_or_update_btc_data
+from btc_direction.data import load_or_update_btc_data, load_or_update_futures_data
 from btc_direction.features import make_feature_frame
 from btc_direction.model import compute_metrics, xgb_default_params
 
@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     cfg = PipelineConfig()
     parser = argparse.ArgumentParser(description="Incrementally update XGBoost BTC direction models with new candles.")
     parser.add_argument("--data", default=str(cfg.raw_data_path), type=str)
+    parser.add_argument("--perp-data", default=str(cfg.perp_raw_data_path), type=str)
     parser.add_argument("--features-out", default=str(cfg.features_path), type=str)
     parser.add_argument("--models-dir", default=str(cfg.models_dir), type=str)
     parser.add_argument("--reports-dir", default=str(cfg.reports_dir), type=str)
@@ -76,6 +77,7 @@ def main() -> None:
     args = parse_args()
 
     data_path = Path(args.data)
+    perp_data_path = Path(args.perp_data)
     features_out = Path(args.features_out)
     models_dir = Path(args.models_dir)
     reports_dir = Path(args.reports_dir)
@@ -92,7 +94,14 @@ def main() -> None:
         start_date="2017-08-17",
         force_full=False,
     )
-    features_df, feature_cols, target_cols = make_feature_frame(raw_df, horizons=horizons)
+    perp_df = load_or_update_futures_data(
+        output_path=perp_data_path,
+        symbol="BTCUSDT",
+        interval="5m",
+        start_date="2019-09-08",
+        force_full=False,
+    )
+    features_df, feature_cols, target_cols = make_feature_frame(raw_df, horizons=horizons, perp_df=perp_df)
     features_out.parent.mkdir(parents=True, exist_ok=True)
     features_df.to_parquet(features_out, index=False)
 

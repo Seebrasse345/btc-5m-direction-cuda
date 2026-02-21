@@ -28,6 +28,10 @@ class PipelineConfig:
         return self.root / "data" / "processed" / "btcusdt_5m_features.parquet"
 
     @property
+    def perp_raw_data_path(self) -> Path:
+        return self.root / "data" / "raw" / "btcusdt_perp_5m.parquet"
+
+    @property
     def models_dir(self) -> Path:
         return self.root / "models"
 
