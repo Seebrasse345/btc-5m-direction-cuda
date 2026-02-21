@@ -41,6 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--features-out", default=str(cfg.features_path), type=str)
     parser.add_argument("--models-dir", default=str(cfg.models_dir), type=str)
     parser.add_argument("--reports-dir", default=str(cfg.reports_dir), type=str)
+    parser.add_argument("--ref-data-dir", default=str(cfg.root / "data" / "raw"), type=str)
+    parser.add_argument("--ref-symbols", default="", type=str)
     parser.add_argument("--horizons", default="1,3,6,12", type=str)
     parser.add_argument("--weights", default="0.4,0.25,0.2,0.15", type=str)
     parser.add_argument("--n-splits", default=cfg.n_splits, type=int)
@@ -69,6 +71,10 @@ def _parse_float_list(s: str) -> list[float]:
     return out
 
 
+def _parse_str_list(s: str) -> list[str]:
+    return [x.strip().upper() for x in s.split(",") if x.strip()]
+
+
 def _save_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -80,9 +86,11 @@ def main() -> None:
 
     data_path = Path(args.data)
     perp_data_path = Path(args.perp_data)
+    ref_data_dir = Path(args.ref_data_dir)
     models_dir = Path(args.models_dir)
     reports_dir = Path(args.reports_dir)
     features_out = Path(args.features_out)
+    ref_symbols = _parse_str_list(args.ref_symbols)
 
     horizons = _parse_int_list(args.horizons)
     weights = _parse_float_list(args.weights)
@@ -99,7 +107,25 @@ def main() -> None:
 
     raw_df = pd.read_parquet(data_path)
     perp_df = pd.read_parquet(perp_data_path) if perp_data_path.exists() else None
-    features_df, feature_cols, target_cols = make_feature_frame(raw_df, horizons=horizons, perp_df=perp_df)
+    reference_dfs: dict[str, pd.DataFrame] = {}
+    reference_perp_dfs: dict[str, pd.DataFrame] = {}
+    for symbol in ref_symbols:
+        if symbol == "BTCUSDT":
+            continue
+        spot_path = ref_data_dir / f"{symbol.lower()}_5m.parquet"
+        perp_path = ref_data_dir / f"{symbol.lower()}_perp_5m.parquet"
+        if spot_path.exists():
+            reference_dfs[symbol] = pd.read_parquet(spot_path)
+        if perp_path.exists():
+            reference_perp_dfs[symbol] = pd.read_parquet(perp_path)
+
+    features_df, feature_cols, target_cols = make_feature_frame(
+        raw_df,
+        horizons=horizons,
+        perp_df=perp_df,
+        reference_dfs=reference_dfs if reference_dfs else None,
+        reference_perp_dfs=reference_perp_dfs if reference_perp_dfs else None,
+    )
     features_out.parent.mkdir(parents=True, exist_ok=True)
     features_df.to_parquet(features_out, index=False)
 
@@ -553,6 +579,9 @@ def main() -> None:
         "n_rows_dev": int(len(X_dev)),
         "n_rows_holdout": int(len(X_holdout)),
         "feature_count": len(feature_cols),
+        "reference_symbols_requested": ref_symbols,
+        "reference_symbols_loaded": sorted(reference_dfs.keys()),
+        "reference_symbols_perp_loaded": sorted(reference_perp_dfs.keys()),
         "xgb_base_params": base_params,
         "xgb_params_by_horizon": {str(k): v for k, v in horizon_params.items()},
     }

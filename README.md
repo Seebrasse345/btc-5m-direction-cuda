@@ -6,6 +6,7 @@ This project downloads full available `BTCUSDT` 5-minute candles, engineers leak
 
 - Downloads and updates full Binance Spot `BTCUSDT` `5m` kline history.
 - Downloads and updates Binance Futures perpetual `BTCUSDT` `5m` klines and builds basis features.
+- Optionally downloads reference markets (e.g., `ETHUSDT`, `BNBUSDT`) for cross-asset context features.
 - Builds lagged/rolling technical and market microstructure features.
 - Trains one GPU XGBoost classifier per horizon (default: `1,3,6,12` candles = `5m,15m,30m,60m`).
 - Runs per-horizon GPU hyperparameter search before final training.
@@ -40,6 +41,7 @@ python scripts/blend_xgb_lstm.py
 ```powershell
 # Download/update data only
 python scripts/download_5m_data.py --force-full
+python scripts/download_reference_data.py --symbols ETHUSDT,BNBUSDT
 
 # Train only
 python scripts/train_multihorizon.py `
@@ -50,6 +52,11 @@ python scripts/train_multihorizon.py `
   --holdout-fraction 0.2 `
   --tune-trials 12 `
   --min-signal-coverage 0.2
+
+# Train with cross-asset references (optional)
+python scripts/train_multihorizon.py `
+  --ref-symbols ETHUSDT,BNBUSDT `
+  --tune-trials 8
 
 # LSTM sequence model (CUDA)
 python scripts/train_lstm_multihorizon.py `
@@ -83,6 +90,7 @@ Additionally, fixed ultra-precision quantile policies (`q=0.99/0.995`) are expor
 
 - Raw data: `data/raw/btcusdt_5m.parquet`
 - Futures data: `data/raw/btcusdt_perp_5m.parquet`
+- Optional reference data: `data/raw/<symbol>_5m.parquet`, `data/raw/<symbol>_perp_5m.parquet`
 - Feature matrix: `data/processed/btcusdt_5m_features.parquet`
 - Models: `models/xgb_h*.json`
 - Reports:
@@ -138,3 +146,8 @@ gh repo create btc-direction-cuda --public --source . --remote origin --push
 - Temporal Fusion Transformer (multi-horizon forecasting): https://arxiv.org/abs/1912.09363
 - Multi-step forecasting strategies review (direct vs recursive): https://doi.org/10.1016/j.ijforecast.2011.03.006
 - `TimeSeriesSplit` with `gap` for time-ordered validation: https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html
+- Akyildirim et al. (2021), BTC futures direction across short horizons: https://pmc.ncbi.nlm.nih.gov/articles/PMC8144077/
+- DeepLOB (CNN+LSTM for microstructure-based direction): https://arxiv.org/abs/1808.03668
+- BDLOB (Bayesian uncertainty-aware LOB forecasting): https://arxiv.org/abs/1811.10041
+- SelectiveNet (risk-coverage selective prediction): https://proceedings.mlr.press/v97/geifman19a.html
+- On-chain + deep learning for BTC movement (feature-rich setting): https://jfin-swufe.springeropen.com/articles/10.1186/s40854-024-00667-2

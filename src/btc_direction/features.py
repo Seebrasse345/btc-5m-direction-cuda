@@ -27,10 +27,16 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     return tr.rolling(period).mean()
 
 
+def _symbol_prefix(symbol: str) -> str:
+    return "".join(ch for ch in symbol.lower() if ch.isalnum())
+
+
 def make_feature_frame(
     raw_df: pd.DataFrame,
     horizons: list[int],
     perp_df: pd.DataFrame | None = None,
+    reference_dfs: dict[str, pd.DataFrame] | None = None,
+    reference_perp_dfs: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, list[str], list[str]]:
     df = raw_df.copy()
     df = df.sort_values("open_time").drop_duplicates("open_time").reset_index(drop=True)
@@ -280,6 +286,75 @@ def make_feature_frame(
             basis_cols[f"f_basis_std_{window}"] = basis_std
             basis_cols[f"f_basis_z_{window}"] = (out["f_basis_close"] - basis_mean) / (basis_std + 1e-12)
         out = pd.concat([out, pd.DataFrame(basis_cols)], axis=1)
+
+    if reference_dfs:
+        reference_perp_dfs = reference_perp_dfs or {}
+        btc_ret_1 = ret_1.fillna(0.0)
+        ref_feature_cols: dict[str, pd.Series] = {}
+        for symbol in sorted(reference_dfs):
+            ref = reference_dfs[symbol].copy()
+            for col in ["open_time", "open", "high", "low", "close", "volume"]:
+                if col in ref.columns:
+                    ref[col] = pd.to_numeric(ref[col], errors="coerce")
+            ref = ref[["open_time", "open", "high", "low", "close", "volume"]]
+            ref = ref.sort_values("open_time").drop_duplicates("open_time")
+            merged_ref = pd.DataFrame({"open_time": df["open_time"]}).merge(ref, on="open_time", how="left")
+
+            prefix = _symbol_prefix(symbol)
+            ref_available = merged_ref["close"].notna().astype("float32")
+            ref_close = merged_ref["close"].ffill().fillna(df["close"])
+            ref_open = merged_ref["open"].ffill().fillna(df["open"])
+            ref_volume = merged_ref["volume"].fillna(0.0)
+            ref_ret_1 = ref_close.pct_change().fillna(0.0)
+
+            ref_feature_cols[f"f_ref_{prefix}_available"] = ref_available
+            ref_feature_cols[f"f_ref_{prefix}_ret_1"] = ref_ret_1
+            ref_feature_cols[f"f_ref_{prefix}_ret_3"] = ref_close.pct_change(3).fillna(0.0)
+            ref_feature_cols[f"f_ref_{prefix}_ret_12"] = ref_close.pct_change(12).fillna(0.0)
+            ref_feature_cols[f"f_ref_{prefix}_ret_spread_1"] = ref_ret_1 - btc_ret_1
+            ref_feature_cols[f"f_ref_{prefix}_body"] = (ref_close - ref_open) / (ref_open + 1e-12)
+            ref_feature_cols[f"f_ref_{prefix}_vol_ratio"] = ref_volume / (df["volume"] + 1e-12)
+            ref_feature_cols[f"f_ref_{prefix}_price_ratio"] = ref_close / (df["close"] + 1e-12)
+            ref_feature_cols[f"f_ref_{prefix}_corr_96"] = ref_ret_1.rolling(96).corr(btc_ret_1)
+            ref_feature_cols[f"f_ref_{prefix}_corr_288"] = ref_ret_1.rolling(288).corr(btc_ret_1)
+            beta_den_96 = btc_ret_1.rolling(96).var() + 1e-12
+            beta_den_288 = btc_ret_1.rolling(288).var() + 1e-12
+            ref_feature_cols[f"f_ref_{prefix}_beta_96"] = ref_ret_1.rolling(96).cov(btc_ret_1) / beta_den_96
+            ref_feature_cols[f"f_ref_{prefix}_beta_288"] = ref_ret_1.rolling(288).cov(btc_ret_1) / beta_den_288
+
+            ref_perp = reference_perp_dfs.get(symbol)
+            if ref_perp is not None and not ref_perp.empty:
+                rperp = ref_perp.copy()
+                for col in ["open_time", "open", "close", "volume"]:
+                    if col in rperp.columns:
+                        rperp[col] = pd.to_numeric(rperp[col], errors="coerce")
+                rperp = rperp[["open_time", "open", "close", "volume"]]
+                rperp = rperp.sort_values("open_time").drop_duplicates("open_time")
+                merged_perp = pd.DataFrame({"open_time": df["open_time"]}).merge(rperp, on="open_time", how="left")
+
+                ref_perp_available = merged_perp["close"].notna().astype("float32")
+                ref_perp_open = merged_perp["open"].ffill().fillna(ref_open)
+                ref_perp_close = merged_perp["close"].ffill().fillna(ref_close)
+                ref_perp_volume = merged_perp["volume"].fillna(0.0)
+                ref_basis_close = (ref_perp_close - ref_close) / (ref_close + 1e-12)
+
+                ref_feature_cols[f"f_ref_{prefix}_perp_available"] = ref_perp_available
+                ref_feature_cols[f"f_ref_{prefix}_perp_ret_1"] = ref_perp_close.pct_change().fillna(0.0)
+                ref_feature_cols[f"f_ref_{prefix}_basis_close"] = ref_basis_close
+                ref_feature_cols[f"f_ref_{prefix}_basis_change"] = (
+                    (ref_perp_close - ref_close) / (ref_close + 1e-12)
+                    - (ref_perp_open - ref_open) / (ref_open + 1e-12)
+                )
+                ref_feature_cols[f"f_ref_{prefix}_perp_spot_vol_ratio"] = ref_perp_volume / (ref_volume + 1e-12)
+                for window in [12, 48, 144]:
+                    basis_mean = ref_basis_close.rolling(window).mean()
+                    basis_std = ref_basis_close.rolling(window).std()
+                    ref_feature_cols[f"f_ref_{prefix}_basis_z_{window}"] = (
+                        (ref_basis_close - basis_mean) / (basis_std + 1e-12)
+                    )
+
+        if ref_feature_cols:
+            out = pd.concat([out, pd.DataFrame(ref_feature_cols)], axis=1)
 
     target_cols: list[str] = []
     target_map: dict[str, pd.Series] = {}
