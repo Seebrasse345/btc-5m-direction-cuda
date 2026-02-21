@@ -139,15 +139,72 @@ def optimize_high_precision_policy(
             objective_score=float("-inf"),
         )
 
-    edge = np.abs(p - center)
-    quantiles = np.linspace(0.80, 0.999, 120) if quantiles is None else quantiles
+    if quantiles is None:
+        lower_q_grid = np.linspace(0.005, 0.25, 24)
+        upper_q_grid = np.linspace(0.75, 0.995, 24)
+        edge_q_grid = np.linspace(0.80, 0.999, 40)
+    else:
+        q = np.asarray(quantiles, dtype=np.float64)
+        lower_q_grid = q[(q > 0.0) & (q < center)]
+        upper_q_grid = q[(q > center) & (q < 1.0)]
+        edge_q_grid = q[(q > 0.5) & (q < 1.0)]
+        if lower_q_grid.size == 0:
+            lower_q_grid = np.linspace(0.01, 0.25, 12)
+        if upper_q_grid.size == 0:
+            upper_q_grid = np.linspace(0.75, 0.99, 12)
+        if edge_q_grid.size == 0:
+            edge_q_grid = np.linspace(0.80, 0.995, 20)
 
     best_meeting: HighPrecisionPolicy | None = None
     best_meeting_coverage = float("-inf")
+    best_meeting_win_rate = float("-inf")
     best_fallback: HighPrecisionPolicy | None = None
     best_fallback_score = float("-inf")
 
-    for q in quantiles:
+    # Asymmetric threshold search (lets long/short confidence differ).
+    for lq in lower_q_grid:
+        lower = float(np.quantile(p, lq))
+        for uq in upper_q_grid:
+            upper = float(np.quantile(p, uq))
+            if upper <= lower:
+                continue
+            signal = make_directional_signals(p, lower=lower, upper=upper)
+            m = signal_metrics(y, signal)
+            coverage = float(m["coverage"])
+            win_rate = float(m["win_rate"]) if not np.isnan(m["win_rate"]) else float("nan")
+            if np.isnan(win_rate) or coverage <= 0.0:
+                continue
+
+            if coverage >= min_coverage and win_rate >= target_win_rate:
+                if (coverage > best_meeting_coverage) or (
+                    np.isclose(coverage, best_meeting_coverage) and win_rate > best_meeting_win_rate
+                ):
+                    best_meeting_coverage = coverage
+                    best_meeting_win_rate = win_rate
+                    best_meeting = HighPrecisionPolicy(
+                        lower=lower,
+                        upper=upper,
+                        target_win_rate=target_win_rate,
+                        realized_win_rate=win_rate,
+                        realized_coverage=coverage,
+                        objective_score=coverage,
+                    )
+
+            fallback_score = float(win_rate - abs(target_win_rate - win_rate) + 0.03 * np.sqrt(coverage))
+            if coverage >= min_coverage and fallback_score > best_fallback_score:
+                best_fallback_score = fallback_score
+                best_fallback = HighPrecisionPolicy(
+                    lower=lower,
+                    upper=upper,
+                    target_win_rate=target_win_rate,
+                    realized_win_rate=win_rate,
+                    realized_coverage=coverage,
+                    objective_score=fallback_score,
+                )
+
+    # Symmetric margin search as backstop.
+    edge = np.abs(p - center)
+    for q in edge_q_grid:
         margin = float(np.quantile(edge, q))
         lower = float(center - margin)
         upper = float(center + margin)
@@ -159,8 +216,11 @@ def optimize_high_precision_policy(
             continue
 
         if coverage >= min_coverage and win_rate >= target_win_rate:
-            if coverage > best_meeting_coverage:
+            if (coverage > best_meeting_coverage) or (
+                np.isclose(coverage, best_meeting_coverage) and win_rate > best_meeting_win_rate
+            ):
                 best_meeting_coverage = coverage
+                best_meeting_win_rate = win_rate
                 best_meeting = HighPrecisionPolicy(
                     lower=lower,
                     upper=upper,
@@ -170,7 +230,7 @@ def optimize_high_precision_policy(
                     objective_score=coverage,
                 )
 
-        fallback_score = float(win_rate - abs(target_win_rate - win_rate) + 0.01 * coverage)
+        fallback_score = float(win_rate - abs(target_win_rate - win_rate) + 0.03 * np.sqrt(coverage))
         if coverage >= min_coverage and fallback_score > best_fallback_score:
             best_fallback_score = fallback_score
             best_fallback = HighPrecisionPolicy(

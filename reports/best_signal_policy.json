@@ -1,11 +1,11 @@
 {
   "mode": "weighted_multi_horizon",
-  "lower": 0.46,
+  "lower": 0.465,
   "upper": 0.535,
-  "objective_score": 0.580904345565147,
-  "coverage": 0.2506744755952247,
-  "win_rate": 0.5440929168815444,
-  "long_win_rate": 0.5487983408564109,
-  "short_win_rate": 0.5413579152632512,
-  "num_trades": 44599.0
+  "objective_score": 0.5825205121598177,
+  "coverage": 0.24927775716903292,
+  "win_rate": 0.5435954093481545,
+  "long_win_rate": 0.5438796444039207,
+  "short_win_rate": 0.5434093198522554,
+  "num_trades": 44351.0
 }

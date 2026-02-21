@@ -65,17 +65,157 @@ def make_feature_frame(
     out["f_ret_1"] = ret_1
     out["f_log_ret_1"] = log_ret
 
-    for lag in [2, 3, 6, 12, 24, 48, 96]:
-        out[f"f_ret_lag_{lag}"] = df["close"].pct_change(lag)
-        out[f"f_vol_lag_{lag}"] = df["volume"].pct_change(lag)
+    # Candlestick-pattern features (contextual market structure)
+    body_abs = (df["close"] - df["open"]).abs()
+    candle_range = (df["high"] - df["low"]).abs() + 1e-12
+    upper_wick_abs = (df["high"] - np.maximum(df["open"], df["close"])).clip(lower=0.0)
+    lower_wick_abs = (np.minimum(df["open"], df["close"]) - df["low"]).clip(lower=0.0)
+    body_to_range = body_abs / candle_range
+    upper_to_range = upper_wick_abs / candle_range
+    lower_to_range = lower_wick_abs / candle_range
 
+    bullish = (df["close"] > df["open"]).astype("float32")
+    bearish = (df["close"] < df["open"]).astype("float32")
+    prev_open = df["open"].shift(1)
+    prev_close = df["close"].shift(1)
+    prev_high = df["high"].shift(1)
+    prev_low = df["low"].shift(1)
+    prev_range = (prev_high - prev_low).abs() + 1e-12
+    close_pos = (df["close"] - df["low"]) / candle_range
+    sma_48 = df["close"].rolling(48).mean()
+
+    out["f_body_to_range"] = body_to_range
+    out["f_upper_wick_to_range"] = upper_to_range
+    out["f_lower_wick_to_range"] = lower_to_range
+    out["f_close_pos_in_range"] = close_pos
+
+    out["f_pat_doji"] = (body_to_range <= 0.10).astype("float32")
+    out["f_pat_hammer"] = (
+        (lower_wick_abs >= 2.0 * body_abs)
+        & (upper_wick_abs <= 0.35 * body_abs + 1e-12)
+        & (body_to_range <= 0.45)
+    ).astype("float32")
+    out["f_pat_shooting_star"] = (
+        (upper_wick_abs >= 2.0 * body_abs)
+        & (lower_wick_abs <= 0.35 * body_abs + 1e-12)
+        & (body_to_range <= 0.45)
+    ).astype("float32")
+    out["f_pat_bull_engulf"] = (
+        (df["close"] > df["open"])
+        & (prev_close < prev_open)
+        & (df["open"] <= prev_close)
+        & (df["close"] >= prev_open)
+    ).astype("float32")
+    out["f_pat_bear_engulf"] = (
+        (df["close"] < df["open"])
+        & (prev_close > prev_open)
+        & (df["open"] >= prev_close)
+        & (df["close"] <= prev_open)
+    ).astype("float32")
+    out["f_pat_inside_bar"] = ((df["high"] < prev_high) & (df["low"] > prev_low)).astype("float32")
+    out["f_pat_outside_bar"] = ((df["high"] > prev_high) & (df["low"] < prev_low)).astype("float32")
+    out["f_pat_three_up"] = bullish.rolling(3).sum().eq(3).astype("float32")
+    out["f_pat_three_down"] = bearish.rolling(3).sum().eq(3).astype("float32")
+    out["f_pat_breakout_up_20"] = (df["close"] > df["high"].shift(1).rolling(20).max()).astype("float32")
+    out["f_pat_breakout_down_20"] = (df["close"] < df["low"].shift(1).rolling(20).min()).astype("float32")
+    out["f_pat_marubozu_bull"] = (
+        (df["close"] > df["open"])
+        & (body_to_range >= 0.80)
+        & (upper_to_range <= 0.10)
+        & (lower_to_range <= 0.10)
+    ).astype("float32")
+    out["f_pat_marubozu_bear"] = (
+        (df["close"] < df["open"])
+        & (body_to_range >= 0.80)
+        & (upper_to_range <= 0.10)
+        & (lower_to_range <= 0.10)
+    ).astype("float32")
+    out["f_pat_spinning_top"] = (
+        (body_to_range <= 0.25)
+        & (upper_to_range >= 0.30)
+        & (lower_to_range >= 0.30)
+    ).astype("float32")
+    out["f_pat_harami_bull"] = (
+        (df["close"] > df["open"])
+        & (prev_close < prev_open)
+        & (df["open"] >= prev_close)
+        & (df["close"] <= prev_open)
+    ).astype("float32")
+    out["f_pat_harami_bear"] = (
+        (df["close"] < df["open"])
+        & (prev_close > prev_open)
+        & (df["open"] <= prev_close)
+        & (df["close"] >= prev_open)
+    ).astype("float32")
+    out["f_pat_tweezer_top"] = (
+        (prev_close > prev_open)
+        & (df["close"] < df["open"])
+        & (((df["high"] - prev_high).abs() / prev_range) <= 0.10)
+    ).astype("float32")
+    out["f_pat_tweezer_bottom"] = (
+        (prev_close < prev_open)
+        & (df["close"] > df["open"])
+        & (((df["low"] - prev_low).abs() / prev_range) <= 0.10)
+    ).astype("float32")
+    out["f_pat_gap_up"] = (df["low"] > prev_high).astype("float32")
+    out["f_pat_gap_down"] = (df["high"] < prev_low).astype("float32")
+    range_abs = (df["high"] - df["low"]).abs()
+    out["f_pat_nr7"] = (range_abs <= (range_abs.rolling(7).min() + 1e-12)).astype("float32")
+    out["f_pat_hammer_downtrend"] = (out["f_pat_hammer"] * (df["close"] < sma_48).astype("float32")).astype("float32")
+    out["f_pat_shooting_star_uptrend"] = (
+        out["f_pat_shooting_star"] * (df["close"] > sma_48).astype("float32")
+    ).astype("float32")
+    bull_streak = bullish.groupby((bullish == 0).cumsum()).cumsum()
+    bear_streak = bearish.groupby((bearish == 0).cumsum()).cumsum()
+    out["f_bull_streak"] = bull_streak.astype("float32")
+    out["f_bear_streak"] = bear_streak.astype("float32")
+
+    pattern_cols = [
+        "f_pat_doji",
+        "f_pat_hammer",
+        "f_pat_shooting_star",
+        "f_pat_bull_engulf",
+        "f_pat_bear_engulf",
+        "f_pat_inside_bar",
+        "f_pat_outside_bar",
+        "f_pat_three_up",
+        "f_pat_three_down",
+        "f_pat_breakout_up_20",
+        "f_pat_breakout_down_20",
+        "f_pat_marubozu_bull",
+        "f_pat_marubozu_bear",
+        "f_pat_spinning_top",
+        "f_pat_harami_bull",
+        "f_pat_harami_bear",
+        "f_pat_tweezer_top",
+        "f_pat_tweezer_bottom",
+        "f_pat_gap_up",
+        "f_pat_gap_down",
+        "f_pat_nr7",
+        "f_pat_hammer_downtrend",
+        "f_pat_shooting_star_uptrend",
+    ]
+    pattern_freq_cols: dict[str, pd.Series] = {}
+    for window in [12, 48, 144]:
+        for col in pattern_cols:
+            pattern_freq_cols[f"{col}_freq_{window}"] = out[col].rolling(window).mean()
+    out = pd.concat([out, pd.DataFrame(pattern_freq_cols)], axis=1)
+
+    lag_cols: dict[str, pd.Series] = {}
+    for lag in [2, 3, 6, 12, 24, 48, 96]:
+        lag_cols[f"f_ret_lag_{lag}"] = df["close"].pct_change(lag)
+        lag_cols[f"f_vol_lag_{lag}"] = df["volume"].pct_change(lag)
+    out = pd.concat([out, pd.DataFrame(lag_cols)], axis=1)
+
+    roll_cols: dict[str, pd.Series] = {}
     for window in [3, 6, 12, 24, 48, 96, 288]:
-        out[f"f_ret_mean_{window}"] = ret_1.rolling(window).mean()
-        out[f"f_ret_std_{window}"] = ret_1.rolling(window).std()
-        out[f"f_ret_skew_{window}"] = ret_1.rolling(window).skew()
-        out[f"f_volume_mean_{window}"] = df["volume"].rolling(window).mean()
-        out[f"f_volume_std_{window}"] = df["volume"].rolling(window).std()
-        out[f"f_range_mean_{window}"] = spread.rolling(window).mean()
+        roll_cols[f"f_ret_mean_{window}"] = ret_1.rolling(window).mean()
+        roll_cols[f"f_ret_std_{window}"] = ret_1.rolling(window).std()
+        roll_cols[f"f_ret_skew_{window}"] = ret_1.rolling(window).skew()
+        roll_cols[f"f_volume_mean_{window}"] = df["volume"].rolling(window).mean()
+        roll_cols[f"f_volume_std_{window}"] = df["volume"].rolling(window).std()
+        roll_cols[f"f_range_mean_{window}"] = spread.rolling(window).mean()
+    out = pd.concat([out, pd.DataFrame(roll_cols)], axis=1)
 
     ema_12 = df["close"].ewm(span=12, adjust=False).mean()
     ema_26 = df["close"].ewm(span=26, adjust=False).mean()
@@ -132,19 +272,22 @@ def make_feature_frame(
         out["f_perp_spot_vol_ratio"] = perp_volume / (df["volume"] + 1e-12)
         out["f_perp_body"] = (perp_close - perp_open) / (perp_open + 1e-12)
 
+        basis_cols: dict[str, pd.Series] = {}
         for window in [3, 6, 12, 24, 48, 96, 288]:
-            out[f"f_basis_mean_{window}"] = out["f_basis_close"].rolling(window).mean()
-            out[f"f_basis_std_{window}"] = out["f_basis_close"].rolling(window).std()
-            out[f"f_basis_z_{window}"] = (
-                (out["f_basis_close"] - out["f_basis_close"].rolling(window).mean())
-                / (out["f_basis_close"].rolling(window).std() + 1e-12)
-            )
+            basis_mean = out["f_basis_close"].rolling(window).mean()
+            basis_std = out["f_basis_close"].rolling(window).std()
+            basis_cols[f"f_basis_mean_{window}"] = basis_mean
+            basis_cols[f"f_basis_std_{window}"] = basis_std
+            basis_cols[f"f_basis_z_{window}"] = (out["f_basis_close"] - basis_mean) / (basis_std + 1e-12)
+        out = pd.concat([out, pd.DataFrame(basis_cols)], axis=1)
 
     target_cols: list[str] = []
+    target_map: dict[str, pd.Series] = {}
     for h in horizons:
         col = f"target_h{h}"
-        out[col] = (df["close"].shift(-h) > df["open"].shift(-h)).astype("float64")
+        target_map[col] = (df["close"].shift(-h) > df["open"].shift(-h)).astype("float64")
         target_cols.append(col)
+    out = pd.concat([out, pd.DataFrame(target_map)], axis=1)
 
     feature_cols = [c for c in out.columns if c.startswith("f_")]
     out = out.replace([np.inf, -np.inf], np.nan)

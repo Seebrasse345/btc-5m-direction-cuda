@@ -1,27 +1,27 @@
 {
   "cv_auc_mean_by_horizon": {
-    "1": 0.5463605048757036,
-    "3": 0.5253886424347962,
-    "6": 0.5115579490988075,
-    "12": 0.5067240925485355
+    "1": 0.5462823845123358,
+    "3": 0.5273045048055781,
+    "6": 0.5151366427426731,
+    "12": 0.5086466796770066
   },
   "holdout_auc_by_horizon": {
-    "1": 0.5299214811585532,
-    "12": 0.5036689557892156,
-    "3": 0.5158136398495965,
-    "6": 0.509405251987403
+    "1": 0.5293006336560231,
+    "12": 0.5031585869414446,
+    "3": 0.5161151282682193,
+    "6": 0.5114762720598148
   },
-  "weighted_holdout_auc": 0.5282759908014364,
-  "weighted_holdout_f1": 0.4756066192231844,
-  "weighted_signal_holdout_win_rate": 0.5440929168815444,
-  "weighted_signal_holdout_coverage": 0.2506744755952247,
+  "weighted_holdout_auc": 0.5285584191579381,
+  "weighted_holdout_f1": 0.4994179482529673,
+  "weighted_signal_holdout_win_rate": 0.5435954093481545,
+  "weighted_signal_holdout_coverage": 0.24927775716903292,
   "best_signal_mode": "weighted_multi_horizon",
-  "best_signal_holdout_win_rate": 0.5440929168815444,
-  "best_signal_holdout_coverage": 0.2506744755952247,
-  "high_precision_model": "weighted",
-  "high_precision_holdout_win_rate": 0.5966850828729282,
-  "high_precision_holdout_coverage": 0.0030520020683918255,
-  "high_precision_quantile_model": "h1",
-  "high_precision_quantile_holdout_win_rate": 0.603411513859275,
-  "high_precision_quantile_holdout_coverage": 0.0026360754513365856
+  "best_signal_holdout_win_rate": 0.5435954093481545,
+  "best_signal_holdout_coverage": 0.24927775716903292,
+  "high_precision_model": "h1",
+  "high_precision_holdout_win_rate": 0.608955223880597,
+  "high_precision_holdout_coverage": 0.0018828898706145527,
+  "high_precision_quantile_model": "weighted",
+  "high_precision_quantile_holdout_win_rate": 0.5774319066147859,
+  "high_precision_quantile_holdout_coverage": 0.014444856619341494
 }

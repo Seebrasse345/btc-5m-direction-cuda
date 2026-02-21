@@ -1,9 +1,10 @@
 {
-  "model": "h1",
-  "quantile": 0.995,
-  "lower": 0.34153661131858826,
-  "upper": 0.6584633886814117,
-  "holdout_win_rate": 0.603411513859275,
-  "holdout_coverage": 0.0026360754513365856,
-  "holdout_num_trades": 469.0
+  "model": "weighted",
+  "lower_quantile": 0.005,
+  "upper_quantile": 0.995,
+  "lower": 0.4280232787132263,
+  "upper": 0.5708677172660828,
+  "holdout_win_rate": 0.5774319066147859,
+  "holdout_coverage": 0.014444856619341494,
+  "holdout_num_trades": 2570.0
 }

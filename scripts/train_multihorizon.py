@@ -369,7 +369,8 @@ def main() -> None:
     _save_json(reports_dir / "high_precision_best.json", high_precision_payload)
 
     quantile_rows: list[dict[str, float | str]] = []
-    quantile_grid = [0.99, 0.995]
+    lower_quantile_grid = [0.005, 0.01, 0.02]
+    upper_quantile_grid = [0.98, 0.99, 0.995]
     model_streams: list[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
     for h in horizons:
         valid = ~np.isnan(horizon_oof_pred[h])
@@ -393,28 +394,30 @@ def main() -> None:
     )
 
     for model_name, oof_p, oof_y, hold_p, hold_y in model_streams:
-        edge = np.abs(oof_p - 0.5)
-        for q in quantile_grid:
-            margin = float(np.quantile(edge, q))
-            lower = 0.5 - margin
-            upper = 0.5 + margin
-            oof_signal = make_directional_signals(oof_p, lower=lower, upper=upper)
-            hold_signal = make_directional_signals(hold_p, lower=lower, upper=upper)
-            oof_m = signal_metrics(oof_y, oof_signal)
-            hold_m = signal_metrics(hold_y, hold_signal)
-            quantile_rows.append(
-                {
-                    "model": model_name,
-                    "quantile": q,
-                    "lower": lower,
-                    "upper": upper,
-                    "oof_win_rate": oof_m["win_rate"],
-                    "oof_coverage": oof_m["coverage"],
-                    "holdout_win_rate": hold_m["win_rate"],
-                    "holdout_coverage": hold_m["coverage"],
-                    "holdout_num_trades": hold_m["num_trades"],
-                }
-            )
+        for lower_q in lower_quantile_grid:
+            lower = float(np.quantile(oof_p, lower_q))
+            for upper_q in upper_quantile_grid:
+                upper = float(np.quantile(oof_p, upper_q))
+                if upper <= lower:
+                    continue
+                oof_signal = make_directional_signals(oof_p, lower=lower, upper=upper)
+                hold_signal = make_directional_signals(hold_p, lower=lower, upper=upper)
+                oof_m = signal_metrics(oof_y, oof_signal)
+                hold_m = signal_metrics(hold_y, hold_signal)
+                quantile_rows.append(
+                    {
+                        "model": model_name,
+                        "lower_quantile": lower_q,
+                        "upper_quantile": upper_q,
+                        "lower": lower,
+                        "upper": upper,
+                        "oof_win_rate": oof_m["win_rate"],
+                        "oof_coverage": oof_m["coverage"],
+                        "holdout_win_rate": hold_m["win_rate"],
+                        "holdout_coverage": hold_m["coverage"],
+                        "holdout_num_trades": hold_m["num_trades"],
+                    }
+                )
 
     quantile_df = pd.DataFrame(quantile_rows)
     quantile_df.to_csv(reports_dir / "high_precision_quantile_policies.csv", index=False)
@@ -430,7 +433,8 @@ def main() -> None:
             best_quantile = quantile_valid.sort_values("holdout_win_rate", ascending=False).iloc[0]
     quantile_payload = {
         "model": str(best_quantile["model"]),
-        "quantile": float(best_quantile["quantile"]),
+        "lower_quantile": float(best_quantile["lower_quantile"]),
+        "upper_quantile": float(best_quantile["upper_quantile"]),
         "lower": float(best_quantile["lower"]),
         "upper": float(best_quantile["upper"]),
         "holdout_win_rate": float(best_quantile["holdout_win_rate"]),
@@ -438,6 +442,79 @@ def main() -> None:
         "holdout_num_trades": float(best_quantile["holdout_num_trades"]),
     }
     _save_json(reports_dir / "high_precision_quantile_best.json", quantile_payload)
+
+    # Rolling walk-forward stability check for deployment realism.
+    stability_rows: list[dict[str, float | str]] = []
+    stability_targets = [0.60, 0.65]
+    n_windows = 8
+    for model_name, oof_p, oof_y, _, _ in model_streams:
+        n = len(oof_p)
+        if n < 10_000:
+            continue
+        bounds = np.linspace(0, n, n_windows + 1, dtype=int)
+        for target_wr in stability_targets:
+            for i in range(n_windows - 1):
+                tr_start = bounds[i]
+                tr_end = bounds[i + 1]
+                te_start = bounds[i + 1]
+                te_end = bounds[i + 2]
+                if tr_end - tr_start < 1_000 or te_end - te_start < 1_000:
+                    continue
+                policy = optimize_high_precision_policy(
+                    y_true=oof_y[tr_start:tr_end],
+                    proba=oof_p[tr_start:tr_end],
+                    target_win_rate=target_wr,
+                    min_coverage=0.001,
+                )
+                te_signal = make_directional_signals(
+                    oof_p[te_start:te_end],
+                    lower=policy.lower,
+                    upper=policy.upper,
+                )
+                te_metrics = signal_metrics(oof_y[te_start:te_end], te_signal)
+                stability_rows.append(
+                    {
+                        "model": model_name,
+                        "target_win_rate": target_wr,
+                        "fold": i + 1,
+                        "train_start": int(tr_start),
+                        "train_end": int(tr_end),
+                        "test_start": int(te_start),
+                        "test_end": int(te_end),
+                        "test_win_rate": te_metrics["win_rate"],
+                        "test_coverage": te_metrics["coverage"],
+                        "test_num_trades": te_metrics["num_trades"],
+                    }
+                )
+
+    stability_df = pd.DataFrame(stability_rows)
+    stability_df.to_csv(reports_dir / "policy_stability.csv", index=False)
+    if not stability_df.empty:
+        grp = (
+            stability_df.groupby(["model", "target_win_rate"], as_index=False)
+            .agg(
+                mean_test_win_rate=("test_win_rate", "mean"),
+                min_test_win_rate=("test_win_rate", "min"),
+                mean_test_coverage=("test_coverage", "mean"),
+                min_test_coverage=("test_coverage", "min"),
+                windows=("fold", "count"),
+            )
+            .sort_values(["mean_test_win_rate", "mean_test_coverage"], ascending=[False, False])
+        )
+        grp["meets_target_windows"] = grp.apply(
+            lambda r: int(
+                (
+                    (stability_df["model"] == r["model"])
+                    & (stability_df["target_win_rate"] == r["target_win_rate"])
+                    & (stability_df["test_win_rate"] >= r["target_win_rate"])
+                    & (stability_df["test_coverage"] >= 0.001)
+                ).sum()
+            ),
+            axis=1,
+        )
+        grp.to_csv(reports_dir / "policy_stability_summary.csv", index=False)
+        best_stable = grp.iloc[0].to_dict()
+        _save_json(reports_dir / "policy_stability_best.json", {k: float(v) if isinstance(v, (np.floating, np.integer)) else v for k, v in best_stable.items()})
 
     pred_cols = {"open_time": holdout_times}
     for h in horizons:
